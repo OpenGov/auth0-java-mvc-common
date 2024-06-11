@@ -1,17 +1,22 @@
 package com.auth0;
 
+import static com.auth0.InvalidRequestException.API_ERROR;
+import static com.auth0.InvalidRequestException.INVALID_STATE_ERROR;
+import static com.auth0.InvalidRequestException.JWT_VERIFICATION_ERROR;
+import static com.auth0.InvalidRequestException.MISSING_ACCESS_TOKEN;
+import static com.auth0.InvalidRequestException.MISSING_ID_TOKEN;
+
 import com.auth0.client.auth.AuthAPI;
 import com.auth0.exception.Auth0Exception;
 import com.auth0.json.auth.TokenHolder;
 import com.auth0.net.Response;
-import org.apache.commons.lang3.Validate;
-
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import java.util.Arrays;
 import java.util.List;
-
-import static com.auth0.InvalidRequestException.*;
+import org.apache.commons.lang3.Validate;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 /**
  * Main class to handle the Authorize Redirect request.
@@ -122,17 +127,16 @@ class RequestProcessor {
     /**
      * Pre builds an Auth0 Authorize Url with the given redirect URI, state and nonce parameters.
      *
-     * @param request     the request, used to store state and nonce in the Session
-     * @param response    the response, used to set state and nonce as cookies. If null, session will be used instead.
+     * @param serverWebExchange     the serverWebExchange, used to store state and nonce in the Session
      * @param redirectUri the url to call with the authentication result.
      * @param state       a valid state value.
      * @param nonce       the nonce value that will be used if the response type contains 'id_token'. Can be null.
      * @return the authorize url builder to continue any further parameter customization.
      */
-    AuthorizeUrl buildAuthorizeUrl(HttpServletRequest request, HttpServletResponse response, String redirectUri,
+    AuthorizeUrl buildAuthorizeUrl(ServerWebExchange serverWebExchange, String redirectUri,
                                    String state, String nonce) {
 
-        AuthorizeUrl creator = new AuthorizeUrl(client, request, response, redirectUri, responseType)
+        AuthorizeUrl creator = new AuthorizeUrl(client, serverWebExchange, redirectUri, responseType)
                 .withState(state);
 
         if (this.organization != null) {
@@ -146,7 +150,7 @@ class RequestProcessor {
         }
 
         // null response means state and nonce will be stored in session, so legacy cookie flag does not apply
-        if (response != null) {
+        if (serverWebExchange.getResponse() != null) {
             creator.withLegacySameSiteCookie(useLegacySameSiteCookie);
         }
 
@@ -163,20 +167,27 @@ class RequestProcessor {
      * 4). Clearing the stored state, nonce and max_age values.
      * 5). Handling success and any failure outcomes.
      *
-     * @throws IdentityVerificationException if an error occurred while processing the request
      */
-    Tokens process(HttpServletRequest request, HttpServletResponse response) throws IdentityVerificationException {
-        assertNoError(request);
-        assertValidState(request, response);
+    Mono<Tokens> process(ServerWebExchange serverWebExchange) {
 
+        ServerHttpRequest request = serverWebExchange.getRequest();
+        ServerHttpResponse response = serverWebExchange.getResponse();
+
+        return assertNoError(request)
+            .then(assertValidState(serverWebExchange))
+            .then(getTokens(serverWebExchange, request, response));
+    }
+
+    private Mono<Tokens> getTokens(ServerWebExchange serverWebExchange,
+        ServerHttpRequest request, ServerHttpResponse response) {
         Tokens frontChannelTokens = getFrontChannelTokens(request);
         List<String> responseTypeList = getResponseType();
 
         if (responseTypeList.contains(KEY_ID_TOKEN) && frontChannelTokens.getIdToken() == null) {
-            throw new InvalidRequestException(MISSING_ID_TOKEN, "ID Token is missing from the response.");
+            return Mono.error(new InvalidRequestException(MISSING_ID_TOKEN, "ID Token is missing from the response."));
         }
         if (responseTypeList.contains(KEY_TOKEN) && frontChannelTokens.getAccessToken() == null) {
-            throw new InvalidRequestException(MISSING_ACCESS_TOKEN, "Access Token is missing from the response.");
+            return Mono.error(new InvalidRequestException(MISSING_ACCESS_TOKEN, "Access Token is missing from the response."));
         }
 
         String nonce;
@@ -186,15 +197,24 @@ class RequestProcessor {
 
             // Just in case the developer created the authorizeUrl that stores state/nonce in the session
             if (nonce == null) {
-                nonce = RandomStorage.removeSessionNonce(request);
+                return RandomStorage.removeSessionNonce(serverWebExchange)
+                    .flatMap(newNonce -> {
+                        verifyOptions.setNonce(newNonce);
+                        return getVerifiedTokens(serverWebExchange, frontChannelTokens,
+                            responseTypeList);
+                    });
+            } else {
+                verifyOptions.setNonce(nonce);
+                return getVerifiedTokens(serverWebExchange, frontChannelTokens, responseTypeList);
             }
         } else {
-            nonce = RandomStorage.removeSessionNonce(request);
+            return RandomStorage.removeSessionNonce(serverWebExchange)
+                .flatMap(newNonce -> {
+                    verifyOptions.setNonce(newNonce);
+                    return getVerifiedTokens(serverWebExchange, frontChannelTokens,
+                        responseTypeList);
+                });
         }
-
-        verifyOptions.setNonce(nonce);
-
-        return getVerifiedTokens(request, frontChannelTokens, responseTypeList);
     }
 
     static boolean requiresFormPostResponseMode(List<String> responseType) {
@@ -204,16 +224,15 @@ class RequestProcessor {
 
     /**
      * Obtains code request tokens (if using Code flow) and validates the ID token.
-     * @param request the HTTP request
+     * @param exchange the ServerWebExchange
      * @param frontChannelTokens the tokens obtained from the front channel
      * @param responseTypeList the reponse types
      * @return a Tokens object that wraps the values obtained from the front-channel and/or the code request response.
-     * @throws IdentityVerificationException
      */
-    private Tokens getVerifiedTokens(HttpServletRequest request, Tokens frontChannelTokens, List<String> responseTypeList)
-            throws IdentityVerificationException {
+    private Mono<Tokens> getVerifiedTokens(ServerWebExchange exchange, Tokens frontChannelTokens, List<String> responseTypeList) {
+        ServerHttpRequest request = exchange.getRequest();
 
-        String authorizationCode = request.getParameter(KEY_CODE);
+        String authorizationCode = request.getQueryParams().getFirst(KEY_CODE);
         Tokens codeExchangeTokens = null;
 
         try {
@@ -223,7 +242,7 @@ class RequestProcessor {
             }
             if (responseTypeList.contains(KEY_CODE)) {
                 // Code/Hybrid flow
-                String redirectUri = request.getRequestURL().toString();
+                String redirectUri = request.getURI().toString();
                 codeExchangeTokens = exchangeCodeForTokens(authorizationCode, redirectUri);
                 if (!responseTypeList.contains(KEY_ID_TOKEN)) {
                     // If we already verified the front-channel token, don't verify it again.
@@ -234,9 +253,9 @@ class RequestProcessor {
                 }
             }
         } catch (TokenValidationException e) {
-            throw new IdentityVerificationException(JWT_VERIFICATION_ERROR, "An error occurred while trying to verify the ID Token.", e);
+            return Mono.error(new IdentityVerificationException(JWT_VERIFICATION_ERROR, "An error occurred while trying to verify the ID Token.", e));
         } catch (Auth0Exception e) {
-            throw new IdentityVerificationException(API_ERROR, "An error occurred while exchanging the authorization code.", e);
+            return Mono.error(new IdentityVerificationException(API_ERROR, "An error occurred while exchanging the authorization code.", e));
         }
         // Keep the front-channel ID Token and the code-exchange Access Token.
         return mergeTokens(frontChannelTokens, codeExchangeTokens);
@@ -266,9 +285,9 @@ class RequestProcessor {
      * @param request the request
      * @return a new instance of Tokens wrapping the values present in the request parameters.
      */
-    private Tokens getFrontChannelTokens(HttpServletRequest request) {
-        Long expiresIn = request.getParameter(KEY_EXPIRES_IN) == null ? null : Long.parseLong(request.getParameter(KEY_EXPIRES_IN));
-        return new Tokens(request.getParameter(KEY_ACCESS_TOKEN), request.getParameter(KEY_ID_TOKEN), null, request.getParameter(KEY_TOKEN_TYPE), expiresIn);
+    private Tokens getFrontChannelTokens(ServerHttpRequest request) {
+        Long expiresIn = request.getQueryParams().getFirst(KEY_EXPIRES_IN) == null ? null : Long.parseLong(request.getQueryParams().getFirst(KEY_EXPIRES_IN));
+        return new Tokens(request.getQueryParams().getFirst(KEY_ACCESS_TOKEN), request.getQueryParams().getFirst(KEY_ID_TOKEN), null, request.getQueryParams().getFirst(KEY_TOKEN_TYPE), expiresIn);
     }
 
     /**
@@ -277,38 +296,35 @@ class RequestProcessor {
      * @param request the request
      * @throws InvalidRequestException if the request contains an error
      */
-    private void assertNoError(HttpServletRequest request) throws InvalidRequestException {
-        String error = request.getParameter(KEY_ERROR);
+    private Mono<Void> assertNoError(ServerHttpRequest request) {
+        String error = request.getQueryParams().getFirst(KEY_ERROR);
         if (error != null) {
-            String errorDescription = request.getParameter(KEY_ERROR_DESCRIPTION);
-            throw new InvalidRequestException(error, errorDescription);
+            String errorDescription = request.getQueryParams().getFirst(KEY_ERROR_DESCRIPTION);
+            return Mono.error(new InvalidRequestException(error, errorDescription));
         }
+        return Mono.empty();
     }
 
     /**
      * Checks whether the state received in the request parameters is the same as the one in the state cookie or session
      * for this request.
      *
-     * @param request the request
+     * @param serverWebExchange the serverWebExchange
      * @throws InvalidRequestException if the request contains a different state from the expected one
      */
-    private void assertValidState(HttpServletRequest request, HttpServletResponse response) throws InvalidRequestException {
-        // TODO in v2:
-        //  - only store state/nonce in cookies, remove session storage
-        //  - create specific exception classes for various state validation failures (missing from auth response, missing
-        //    state cookie, mismatch)
-
-        String stateFromRequest = request.getParameter(KEY_STATE);
+    private Mono<Void> assertValidState(ServerWebExchange serverWebExchange) {
+        ServerHttpRequest request = serverWebExchange.getRequest();
+        ServerHttpResponse response = serverWebExchange.getResponse();
+        String stateFromRequest = request.getQueryParams().getFirst(KEY_STATE);
 
         if (stateFromRequest == null) {
-            throw new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one. No state parameter was found on the authorization response.");
+            return Mono.error(new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one. No state parameter was found on the authorization response."));
         }
 
         // If response is null, check the Session.
         // This can happen when the deprecated handle method that only takes the request parameter is called
         if (response == null) {
-            checkSessionState(request, stateFromRequest);
-            return;
+            return checkSessionState(serverWebExchange, stateFromRequest);
         }
 
         String cookieState = TransientCookieStore.getState(request, response);
@@ -316,23 +332,30 @@ class RequestProcessor {
         // Just in case state was stored in Session by building auth URL with deprecated method, but then called the
         // supported handle method with the request and response
         if (cookieState == null) {
-            if (SessionUtils.get(request, StorageUtils.STATE_KEY) == null) {
-                throw new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one. No state cookie or state session attribute found. Check that you are using non-deprecated methods and that cookies are not being removed on the server.");
-            }
-            checkSessionState(request, stateFromRequest);
-            return;
+            return SessionUtils.get(serverWebExchange, StorageUtils.STATE_KEY)
+                .flatMap(state -> {
+                    if (state == null) {
+                        return Mono.error(new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one. No state cookie or state session attribute found. Check that you are using non-deprecated methods and that cookies are not being removed on the server."));
+                    }
+                    return checkSessionState(serverWebExchange, stateFromRequest);
+                });
         }
 
         if (!cookieState.equals(stateFromRequest)) {
-            throw new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one.");
+            return Mono.error(new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one."));
         }
+
+        return Mono.empty();
     }
 
-    private void checkSessionState(HttpServletRequest request, String stateFromRequest) throws InvalidRequestException {
-        boolean valid = RandomStorage.checkSessionState(request, stateFromRequest);
-        if (!valid) {
-            throw new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one.");
-        }
+    private Mono<Void> checkSessionState(ServerWebExchange serverWebExchange, String stateFromRequest) {
+        return RandomStorage.checkSessionState(serverWebExchange, stateFromRequest)
+            .flatMap(valid -> {
+                if (!valid) {
+                    return Mono.error(new InvalidRequestException(INVALID_STATE_ERROR, "The received state doesn't match the expected one."));
+                }
+                return Mono.empty();
+            });
     }
 
     /**
@@ -360,9 +383,9 @@ class RequestProcessor {
      * @param codeExchangeTokens the code-exchange obtained tokens.
      * @return a merged version of Tokens using the best tokens when possible.
      */
-    private Tokens mergeTokens(Tokens frontChannelTokens, Tokens codeExchangeTokens) {
+    private Mono<Tokens> mergeTokens(Tokens frontChannelTokens, Tokens codeExchangeTokens) {
         if (codeExchangeTokens == null) {
-            return frontChannelTokens;
+            return Mono.just(frontChannelTokens);
         }
 
         // Prefer access token from the code exchange
@@ -386,7 +409,7 @@ class RequestProcessor {
         // Refresh token only available from the code exchange
         String refreshToken = codeExchangeTokens.getRefreshToken();
 
-        return new Tokens(accessToken, idToken, refreshToken, type, expiresIn);
+        return Mono.just(new Tokens(accessToken, idToken, refreshToken, type, expiresIn));
     }
 
 }

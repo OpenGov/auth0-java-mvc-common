@@ -4,9 +4,9 @@ import com.auth0.client.HttpOptions;
 import com.auth0.client.auth.AuthAPI;
 import com.auth0.jwk.JwkProvider;
 import com.google.common.annotations.VisibleForTesting;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.Validate;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 
 /**
@@ -255,29 +255,6 @@ public class AuthenticationController {
         }
     }
 
-    /**
-     * Process a request to obtain a set of {@link Tokens} that represent successful authentication or authorization.
-     *
-     * This method should be called when processing the callback request to your application. It will validate
-     * authentication-related request parameters, handle performing a Code Exchange request if using
-     * the "code" response type, and verify the integrity of the ID token (if present).
-     *
-     * <p><strong>Important:</strong> When using this API, you <strong>must</strong> also use {@link AuthenticationController#buildAuthorizeUrl(HttpServletRequest, HttpServletResponse, String)}
-     * when building the {@link AuthorizeUrl} that the user will be redirected to to login. Failure to do so may result
-     * in a broken login experience for the user.</p>
-     *
-     * @param request the received request to process.
-     * @param response the received response to process.
-     * @return the Tokens obtained after the user authentication.
-     * @throws InvalidRequestException       if the error is result of making an invalid authentication request.
-     * @throws IdentityVerificationException if an error occurred while verifying the request tokens.
-     */
-    public Tokens handle(HttpServletRequest request, HttpServletResponse response) throws IdentityVerificationException {
-        Validate.notNull(request, "request must not be null");
-        Validate.notNull(response, "response must not be null");
-
-        return requestProcessor.process(request, response);
-    }
 
     /**
      * Process a request to obtain a set of {@link Tokens} that represent successful authentication or authorization.
@@ -286,75 +263,51 @@ public class AuthenticationController {
      * authentication-related request parameters, handle performing a Code Exchange request if using
      * the "code" response type, and verify the integrity of the ID token (if present).
      *
-     * <p><strong>Important:</strong> When using this API, you <strong>must</strong> also use the {@link AuthenticationController#buildAuthorizeUrl(HttpServletRequest, String)}
+     * <p><strong>Important:</strong> When using this API, you <strong>must</strong> also use the {@link AuthenticationController#buildAuthorizeUrl(ServerWebExchange, String)}
      * when building the {@link AuthorizeUrl} that the user will be redirected to to login. Failure to do so may result
      * in a broken login experience for the user.</p>
      *
      * @deprecated This method uses the {@link jakarta.servlet.http.HttpSession} for auth-based data, and is incompatible
      * with clients that are using the "id_token" or "token" responseType with browsers that enforce SameSite cookie
      * restrictions. This method will be removed in version 2.0.0. Use
-     * {@link AuthenticationController#handle(HttpServletRequest, HttpServletResponse)} instead.
+     * {@link AuthenticationController#handle(ServerWebExchange)} instead.
      *
-     * @param request the received request to process.
+     * @param serverWebExchange the received serverWebExchange to process.
      * @return the Tokens obtained after the user authentication.
      * @throws InvalidRequestException       if the error is result of making an invalid authentication request.
      * @throws IdentityVerificationException if an error occurred while verifying the request tokens.
      */
     @Deprecated
-    public Tokens handle(HttpServletRequest request) throws IdentityVerificationException {
-        Validate.notNull(request, "request must not be null");
+    public Mono<Tokens> handle(ServerWebExchange serverWebExchange) {
+        Validate.notNull(serverWebExchange, "serverWebExchange must not be null");
 
-        return requestProcessor.process(request, null);
+        return requestProcessor.process(serverWebExchange);
     }
 
     /**
      * Pre builds an Auth0 Authorize Url with the given redirect URI using a random state and a random nonce if applicable.
      *
      * <p><strong>Important:</strong> When using this API, you <strong>must</strong> also obtain the tokens using the
-     * {@link AuthenticationController#handle(HttpServletRequest)} method. Failure to do so may result in a broken login
+     * {@link AuthenticationController#handle(ServerWebExchange)} method. Failure to do so may result in a broken login
      * experience for users.</p>
      *
      * @deprecated This method stores data in the {@link jakarta.servlet.http.HttpSession}, and is incompatible with clients
      * that are using the "id_token" or "token" responseType with browsers that enforce SameSite cookie restrictions.
      * This method will be removed in version 2.0.0. Use
-     * {@link AuthenticationController#buildAuthorizeUrl(HttpServletRequest, HttpServletResponse, String)} instead.
+     * {@link AuthenticationController#buildAuthorizeUrl(ServerWebExchange, String)} instead.
      *
-     * @param request     the caller request. Used to keep the session context.
+     * @param serverWebExchange     the caller serverWebExchange. Used to keep the session context.
      * @param redirectUri the url to call back with the authentication result.
      * @return the authorize url builder to continue any further parameter customization.
      */
     @Deprecated
-    public AuthorizeUrl buildAuthorizeUrl(HttpServletRequest request, String redirectUri) {
-        Validate.notNull(request, "request must not be null");
+    public AuthorizeUrl buildAuthorizeUrl(ServerWebExchange serverWebExchange, String redirectUri) {
+        Validate.notNull(serverWebExchange, "serverWebExchange must not be null");
         Validate.notNull(redirectUri, "redirectUri must not be null");
 
         String state = StorageUtils.secureRandomString();
         String nonce = StorageUtils.secureRandomString();
 
-        return requestProcessor.buildAuthorizeUrl(request, null, redirectUri, state, nonce);
+        return requestProcessor.buildAuthorizeUrl(serverWebExchange, redirectUri, state, nonce);
     }
-
-    /**
-     * Pre builds an Auth0 Authorize Url with the given redirect URI using a random state and a random nonce if applicable.
-     *
-     * <p><strong>Important:</strong> When using this API, you <strong>must</strong> also obtain the tokens using the
-     * {@link AuthenticationController#handle(HttpServletRequest, HttpServletResponse)} method. Failure to do so will result in a broken login
-     * experience for users.</p>
-     *
-     * @param request     the HTTP request
-     * @param response    the HTTP response. Used to store auth-based cookies.
-     * @param redirectUri the url to call back with the authentication result.
-     * @return the authorize url builder to continue any further parameter customization.
-     */
-    public AuthorizeUrl buildAuthorizeUrl(HttpServletRequest request, HttpServletResponse response, String redirectUri) {
-        Validate.notNull(request, "request must not be null");
-        Validate.notNull(response, "response must not be null");
-        Validate.notNull(redirectUri, "redirectUri must not be null");
-
-        String state = StorageUtils.secureRandomString();
-        String nonce = StorageUtils.secureRandomString();
-
-        return requestProcessor.buildAuthorizeUrl(request, response, redirectUri, state, nonce);
-    }
-
 }

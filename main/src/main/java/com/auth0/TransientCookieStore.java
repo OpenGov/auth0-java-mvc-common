@@ -1,13 +1,15 @@
 package com.auth0;
 
-import org.apache.commons.lang3.Validate;
-
-import jakarta.servlet.http.Cookie;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import org.apache.commons.lang3.Validate;
+import org.springframework.http.HttpCookie;
+import org.springframework.http.ResponseCookie;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.util.MultiValueMap;
 
 /**
  * Allows storage and retrieval/removal of cookies.
@@ -27,7 +29,7 @@ class TransientCookieStore {
      * @param useLegacySameSiteCookie whether to set a fallback cookie or not
      * @param isSecureCookie whether to always set the Secure cookie attribute or not
      */
-    static void storeState(HttpServletResponse response, String state, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
+    static void storeState(ServerHttpResponse response, String state, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
         store(response, StorageUtils.STATE_KEY, state, sameSite, useLegacySameSiteCookie, isSecureCookie, cookiePath);
     }
 
@@ -40,7 +42,7 @@ class TransientCookieStore {
      * @param useLegacySameSiteCookie whether to set a fallback cookie or not
      * @param isSecureCookie whether to always set the Secure cookie attribute or not
      */
-    static void storeNonce(HttpServletResponse response, String nonce, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
+    static void storeNonce(ServerHttpResponse response, String nonce, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
         store(response, StorageUtils.NONCE_KEY, nonce, sameSite, useLegacySameSiteCookie, isSecureCookie, cookiePath);
     }
 
@@ -51,7 +53,7 @@ class TransientCookieStore {
      * @param response the response object
      * @return the value of the state cookie, if it exists
      */
-    static String getState(HttpServletRequest request, HttpServletResponse response) {
+    static String getState(ServerHttpRequest request, ServerHttpResponse response) {
         return getOnce(StorageUtils.STATE_KEY, request, response);
     }
 
@@ -62,11 +64,11 @@ class TransientCookieStore {
      * @param response the response object
      * @return the value of the nonce cookie, if it exists
      */
-    static String getNonce(HttpServletRequest request, HttpServletResponse response) {
+    static String getNonce(ServerHttpRequest request, ServerHttpResponse response) {
         return getOnce(StorageUtils.NONCE_KEY, request, response);
     }
 
-    private static void store(HttpServletResponse response, String key, String value, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
+    private static void store(ServerHttpResponse response, String key, String value, SameSite sameSite, boolean useLegacySameSiteCookie, boolean isSecureCookie, String cookiePath) {
         Validate.notNull(response, "response must not be null");
         Validate.notNull(key, "key must not be null");
         Validate.notNull(sameSite, "sameSite must not be null");
@@ -85,28 +87,30 @@ class TransientCookieStore {
         }
 
         // Servlet Cookie API does not yet support setting the SameSite attribute, so just set cookie on header
-        response.addHeader("Set-Cookie", sameSiteCookie.buildHeaderString());
+        response.getHeaders().add("Set-Cookie", sameSiteCookie.buildHeaderString());
 
         // set legacy fallback cookie (if configured) for clients that won't accept SameSite=None
         if (isSameSiteNone && useLegacySameSiteCookie) {
             AuthCookie legacyCookie = new AuthCookie("_" + key, value);
             legacyCookie.setSecure(isSecureCookie);
-            response.addHeader("Set-Cookie", legacyCookie.buildHeaderString());
+            response.getHeaders().add("Set-Cookie", legacyCookie.buildHeaderString());
         }
 
     }
 
-    private static String getOnce(String cookieName, HttpServletRequest request, HttpServletResponse response) {
-        Cookie[] requestCookies = request.getCookies();
+    private static String getOnce(String cookieName, ServerHttpRequest request, ServerHttpResponse response) {
+        MultiValueMap<String, HttpCookie> requestCookies = request.getCookies();
         if (requestCookies == null) {
             return null;
         }
 
-        Cookie foundCookie = null;
-        for (Cookie c : requestCookies) {
-            if (cookieName.equals(c.getName())) {
-                foundCookie = c;
-                break;
+        HttpCookie foundCookie = null;
+        for (List<HttpCookie> cs : requestCookies.values()) {
+            for (HttpCookie c : cs) {
+                if (cookieName.equals(c.getName())) {
+                    foundCookie = c;
+                    break;
+                }
             }
         }
 
@@ -116,11 +120,13 @@ class TransientCookieStore {
             delete(foundCookie, response);
         }
 
-        Cookie foundLegacyCookie = null;
-        for (Cookie c : requestCookies) {
-            if (("_" + cookieName).equals(c.getName())) {
-                foundLegacyCookie = c;
-                break;
+        HttpCookie foundLegacyCookie = null;
+        for (List<HttpCookie> cs : requestCookies.values()) {
+            for (HttpCookie c : cs) {
+                if (("_" + cookieName).equals(c.getName())) {
+                    foundLegacyCookie = c;
+                    break;
+                }
             }
         }
 
@@ -133,10 +139,12 @@ class TransientCookieStore {
         return foundCookieVal != null ? foundCookieVal : foundLegacyCookieVal;
     }
 
-    private static void delete(Cookie cookie, HttpServletResponse response) {
-        cookie.setMaxAge(0);
-        cookie.setValue("");
-        response.addCookie(cookie);
+    private static void delete(HttpCookie cookie, ServerHttpResponse response) {
+        ResponseCookie newCookie = ResponseCookie.from(cookie.getName(), "")
+            .maxAge(0)
+            .build();
+        response.getCookies()
+            .add(cookie.getName(), newCookie);
     }
 
     private static String decode(String valueToDecode) {

@@ -6,10 +6,9 @@ import com.auth0.jwt.exceptions.JWTDecodeException;
 import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.exceptions.SignatureVerificationException;
 import com.auth0.jwt.interfaces.DecodedJWT;
-import org.apache.commons.lang3.Validate;
-
 import java.util.Arrays;
 import java.util.List;
+import org.apache.commons.lang3.Validate;
 
 abstract class SignatureVerifier {
 

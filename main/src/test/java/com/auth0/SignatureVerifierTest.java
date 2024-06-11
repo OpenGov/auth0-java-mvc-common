@@ -1,12 +1,16 @@
 package com.auth0;
 
+import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import com.auth0.jwk.Jwk;
 import com.auth0.jwk.JwkException;
 import com.auth0.jwk.JwkProvider;
 import com.auth0.jwt.interfaces.DecodedJWT;
-import org.bouncycastle.util.io.pem.PemReader;
-import org.junit.jupiter.api.Test;
-
 import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.IOException;
@@ -19,13 +23,8 @@ import java.security.interfaces.RSAPublicKey;
 import java.security.spec.EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Scanner;
-
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import org.bouncycastle.util.io.pem.PemReader;
+import org.junit.jupiter.api.Test;
 
 public class SignatureVerifierTest {
 

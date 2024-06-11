@@ -5,6 +5,8 @@ plugins {
 }
 
 dependencies {
+    implementation("org.springframework.boot:spring-boot-starter-webflux:3.2.5")
+
     implementation("jakarta.servlet:jakarta.servlet-api:6.0.0")
     implementation("org.apache.commons:commons-lang3:3.12.0")
     implementation("com.google.guava:guava-annotations:r03")
@@ -22,7 +24,7 @@ dependencies {
     testImplementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 
-version = "1.0.0"
+version = "1.0.1-SNAPSHOT"
 
 publishing {
     publications {

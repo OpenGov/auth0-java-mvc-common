@@ -1,16 +1,22 @@
 package com.auth0;
 
+import static com.auth0.IdentityVerificationException.API_ERROR;
+
 import com.auth0.client.auth.AuthAPI;
 import com.auth0.client.auth.AuthorizeUrlBuilder;
 import com.auth0.exception.Auth0Exception;
 import com.auth0.json.auth.PushedAuthorizationResponse;
-
 import com.auth0.net.Response;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import java.util.*;
-
-import static com.auth0.IdentityVerificationException.API_ERROR;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.springframework.http.server.reactive.AbstractServerHttpResponse;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 /**
  * Class to create and customize an Auth0 Authorize URL.
@@ -21,8 +27,7 @@ public class AuthorizeUrl {
 
     private static final String SCOPE_OPENID = "openid";
 
-    private HttpServletResponse response;
-    private HttpServletRequest request;
+    private ServerWebExchange serverWebExchange;
     private final String responseType;
     private boolean useLegacySameSiteCookie = true;
     private boolean setSecureCookie = false;
@@ -38,20 +43,18 @@ public class AuthorizeUrl {
     /**
      * Creates a new instance that can be used to build an Auth0 Authorization URL.
      *
-     * Using this constructor with a non-null {@link HttpServletResponse} will store the state and nonce as
+     * Using this constructor with a non-null {@link AbstractServerHttpResponse} will store the state and nonce as
      * cookies when the {@link AuthorizeUrl#build()} method is called, with the appropriate SameSite attribute depending
      * on the responseType. State and nonce will also be stored in the {@link jakarta.servlet.http.HttpSession} as a fallback,
      * but this behavior will be removed in a future release, and only cookies will be used.
      *
      * @param client       the Auth0 Authentication API client
      * @parem request      the HTTP request. Used to store state and nonce as a fallback if cookies not set.
-     * @param response     the response where the state and nonce will be stored as cookies
      * @param redirectUri  the url to redirect to after authentication
      * @param responseType the response type to use
      */
-    AuthorizeUrl(AuthAPI client, HttpServletRequest request, HttpServletResponse response, String redirectUri, String responseType) {
-        this.request = request;
-        this.response = response;
+    AuthorizeUrl(AuthAPI client, ServerWebExchange serverWebExchange, String redirectUri, String responseType) {
+        this.serverWebExchange = serverWebExchange;
         this.responseType = responseType;
         this.authAPI = client;
         this.redirectUri = redirectUri;
@@ -112,7 +115,7 @@ public class AuthorizeUrl {
 
     /**
      * Sets whether a fallback cookie should be used for clients that do not support "SameSite=None".
-     * Only applicable when this instance is created with {@link AuthorizeUrl#AuthorizeUrl(AuthAPI, HttpServletRequest, HttpServletResponse, String, String)}.
+     * Only applicable when this instance is created with {@link AuthorizeUrl#AuthorizeUrl(AuthAPI, ServerWebExchange, String, String)}.
      *
      * @param useLegacySameSiteCookie whether or not to set fallback auth cookies for clients that do not support "SameSite=None"
      * @return the builder instance
@@ -206,11 +209,13 @@ public class AuthorizeUrl {
      * @return the string URL
      * @throws IllegalStateException if it's called more than once
      */
-    public String build() throws IllegalStateException {
-        storeTransient();
-        AuthorizeUrlBuilder builder = authAPI.authorizeUrl(redirectUri).withResponseType(responseType);
-        params.forEach(builder::withParameter);
-        return builder.build();
+    public Mono<String> build() throws IllegalStateException {
+        return storeTransient()
+            .then(Mono.fromCallable(() -> {
+                AuthorizeUrlBuilder builder = authAPI.authorizeUrl(redirectUri).withResponseType(responseType);
+                params.forEach(builder::withParameter);
+                return builder.build();
+            }));
     }
 
     /**
@@ -221,32 +226,35 @@ public class AuthorizeUrl {
      * @throws InvalidRequestException if there is an error when making the request.
      * @see <a href="https://www.rfc-editor.org/rfc/rfc9126.html">RFC 9126</a>
      */
-    public String fromPushedAuthorizationRequest() throws InvalidRequestException {
-        storeTransient();
-
-        try {
-            Response<PushedAuthorizationResponse> pushedAuthResponse = authAPI.pushedAuthorizationRequest(redirectUri, responseType, params).execute();
-            if (pushedAuthResponse == null || pushedAuthResponse.getBody() == null) {
-                throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing or empty response");
-            }
-            String requestUri = pushedAuthResponse.getBody().getRequestURI();
-            if (requestUri == null || requestUri.isEmpty()) {
-                throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing or empty request_uri value");
-            }
-            if (pushedAuthResponse.getBody().getExpiresIn() == null) {
-                throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing expires_in value");
-            }
-            return authAPI.authorizeUrlWithPAR(pushedAuthResponse.getBody().getRequestURI());
-        } catch (Auth0Exception e) {
-            throw new InvalidRequestException(API_ERROR, e.getMessage(), e);
-        }
+    public Mono<String> fromPushedAuthorizationRequest() throws InvalidRequestException {
+        return storeTransient()
+            .then(Mono.fromCallable(() -> {
+                try {
+                    Response<PushedAuthorizationResponse> pushedAuthResponse = authAPI.pushedAuthorizationRequest(redirectUri, responseType, params).execute();
+                    if (pushedAuthResponse == null || pushedAuthResponse.getBody() == null) {
+                        throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing or empty response");
+                    }
+                    String requestUri = pushedAuthResponse.getBody().getRequestURI();
+                    if (requestUri == null || requestUri.isEmpty()) {
+                        throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing or empty request_uri value");
+                    }
+                    if (pushedAuthResponse.getBody().getExpiresIn() == null) {
+                        throw new InvalidRequestException(API_ERROR, "The PAR request returned a missing expires_in value");
+                    }
+                    return authAPI.authorizeUrlWithPAR(pushedAuthResponse.getBody().getRequestURI());
+                } catch (Auth0Exception e) {
+                    throw new InvalidRequestException(API_ERROR, e.getMessage(), e);
+                }
+            }));
     }
 
-    private void storeTransient() {
+    private Mono<Void> storeTransient() {
         if (used) {
             throw new IllegalStateException("The AuthorizeUrl instance must not be reused.");
         }
 
+        ServerHttpResponse response = serverWebExchange.getResponse();
+        ServerHttpRequest request = serverWebExchange.getRequest();
         if (response != null) {
             SameSite sameSiteValue = containsFormPost() ? SameSite.NONE : SameSite.LAX;
 
@@ -254,12 +262,12 @@ public class AuthorizeUrl {
             TransientCookieStore.storeNonce(response, nonce, sameSiteValue, useLegacySameSiteCookie, setSecureCookie, cookiePath);
         }
 
-        // Also store in Session just in case developer uses deprecated
-        // AuthenticationController.handle(HttpServletRequest) API
-        RandomStorage.setSessionState(request, state);
-        RandomStorage.setSessionNonce(request, nonce);
-
-        used = true;
+        return Mono.fromCallable(() -> RandomStorage.setSessionState(serverWebExchange, state))
+            .flatMap(webSessionMono -> RandomStorage.setSessionNonce(serverWebExchange, nonce))
+            .flatMap(webSessionMono -> {
+                used = true;
+                return Mono.empty();
+            });
     }
 
     private boolean containsFormPost() {

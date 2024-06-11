@@ -1,8 +1,7 @@
 package com.auth0;
 
-import org.apache.commons.codec.binary.Base64;
-
 import java.security.SecureRandom;
+import org.apache.commons.codec.binary.Base64;
 
 class StorageUtils {
 

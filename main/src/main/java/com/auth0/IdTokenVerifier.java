@@ -1,11 +1,10 @@
 package com.auth0;
 
 import com.auth0.jwt.interfaces.DecodedJWT;
-import org.apache.commons.lang3.Validate;
-
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
+import org.apache.commons.lang3.Validate;
 
 /**
  * Token verification utility class.

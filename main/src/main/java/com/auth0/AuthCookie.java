@@ -1,10 +1,9 @@
 package com.auth0;
 
-import org.apache.commons.lang3.Validate;
-
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import org.apache.commons.lang3.Validate;
 
 /**
  * Represents a cookie to be used for transfer of authentiction-based data such as state and nonce.

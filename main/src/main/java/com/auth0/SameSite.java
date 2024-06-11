@@ -10,7 +10,7 @@ enum SameSite {
     NONE("None"),
     STRICT("Strict");
 
-    private String value;
+    private final String value;
 
     String getValue() {
         return this.value;
